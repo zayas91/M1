@@ -477,42 +477,68 @@
 </body>
 <script src="html5/lib/scripts/bootstrapper.min.js"></script>
 </html>
-// Código
-<script>
-(function() {
-    // 1. Forzar la redirección
+<script> //control de botones de salida en Storyline
+  (function() {
+    var estaEnIframe = window.self !== window.top;
+    
+    // Función principal de reinicio
     function reiniciarCurso() {
-        console.log("Reiniciando curso...");
-        // Intentamos múltiples métodos de redirección para romper el cierre
-        window.location.replace("story.html");
-        setTimeout(function(){ window.location.href = "story.html"; }, 50);
+        console.log("Reiniciando curso... (iframe:", estaEnIframe, ")");
+        
+        // Si estamos en iframe, notificamos al padre
+        if (estaEnIframe) {
+            try {
+                window.parent.postMessage({ 
+                    action: 'restartCourse',
+                    source: 'storyline'
+                }, '*');
+                console.log("Mensaje postMessage enviado al padre");
+            } catch(e) {
+                console.warn("No se pudo comunicar con el padre:", e);
+            }
+        }
+        
+        // También recargamos localmente
+        setTimeout(function() {
+            window.location.replace(window.location.href);
+        }, 100);
+        
+        setTimeout(function() {
+            window.location.href = window.location.href;
+        }, 200);
     }
 
-    // 2. Bloqueo de window.close (Cierre de ventana)
-    // Redefinimos la función tanto en la ventana actual como en la "parent" por si acaso
+    // Bloqueo de window.close
     window.close = reiniciarCurso;
-    if(window.parent) window.parent.close = reiniciarCurso;
+    if (window.parent && window.parent !== window) {
+        try { window.parent.close = reiniciarCurso; } catch(e) {}
+    }
 
-    // 3. Interceptor de window.open (URLs externas)
+    // Interceptor de window.open
     var originalOpen = window.open;
     window.open = function(url, target, features) {
         if (url && url.toLowerCase().indexOf('.pdf') !== -1) {
             return originalOpen.apply(this, arguments);
         }
+        console.log("window.open bloqueado");
         reiniciarCurso();
-        return { close: function(){} }; // Retornamos un objeto falso para evitar errores
+        return { close: function(){} };
     };
 
-    // 4. EL "MARTILLO": Interceptor de eventos de ratón
-    // Escuchamos 'mousedown' en lugar de 'click' porque Storyline 
-    // a veces lanza el cierre antes de que el 'click' termine.
-    document.addEventListener('mousedown', function(e) {
+    // Interceptor de eventos (mousedown, click, touchstart)
+    function interceptarEvento(e) {
         var el = e.target;
-        // Subimos por el árbol de elementos para ver si el usuario tocó el botón salir
-        while (el && el !== document) {
-            var texto = (el.innerText || el.textContent || "").toLowerCase();
-            if (texto.includes("salir") || texto.includes("exit")) {
-                console.log("Botón detectado, anulando acción original...");
+        var intentos = 0;
+        
+        while (el && el !== document && intentos < 15) {
+            var texto = (el.innerText || el.textContent || '').toLowerCase();
+            var href = (el.href || '').toLowerCase();
+            
+            if (texto.includes('salir') || texto.includes('exit') || 
+                texto.includes('cerrar') || texto.includes('close') ||
+                href.includes('javascript:void') || href.includes('close')) {
+                
+                console.log("Botón de salida detectado");
                 e.preventDefault();
                 e.stopPropagation();
                 e.stopImmediatePropagation();
@@ -520,13 +546,29 @@
                 return false;
             }
             el = el.parentNode;
+            intentos++;
         }
-    }, true);
+    }
 
-    // 5. Desactivar el trigger de salida de Storyline
-    // Intentamos "limpiar" las funciones que Storyline registra globalmente
+    document.addEventListener('mousedown', interceptarEvento, true);
+    document.addEventListener('click', interceptarEvento, true);
+    document.addEventListener('touchstart', interceptarEvento, true);
+
+    // Sobrescribir funciones de Storyline
     window.ExitCourse = reiniciarCurso;
     window.LMSFinish = reiniciarCurso;
+    window.CloseCourse = reiniciarCurso;
     
+    // Interceptor adicional después de que cargue Storyline
+    setTimeout(function() {
+        if (window.GetPlayer) {
+            var player = window.GetPlayer();
+            if (player && player.ExitCourse) {
+                player.ExitCourse = reiniciarCurso;
+            }
+        }
+    }, 2000);
+    
+    console.log("Sistema de reinicio activado");
 })();
 </script>
