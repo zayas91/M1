@@ -477,98 +477,174 @@
 </body>
 <script src="html5/lib/scripts/bootstrapper.min.js"></script>
 </html>
-<script> //control de botones de salida en Storyline
-  (function() {
-    var estaEnIframe = window.self !== window.top;
-    
-    // Función principal de reinicio
-    function reiniciarCurso() {
-        console.log("Reiniciando curso... (iframe:", estaEnIframe, ")");
-        
-        // Si estamos en iframe, notificamos al padre
-        if (estaEnIframe) {
-            try {
-                window.parent.postMessage({ 
-                    action: 'restartCourse',
-                    source: 'storyline'
-                }, '*');
-                console.log("Mensaje postMessage enviado al padre");
-            } catch(e) {
-                console.warn("No se pudo comunicar con el padre:", e);
-            }
-        }
-        
-        // También recargamos localmente
-        setTimeout(function() {
-            window.location.replace(window.location.href);
-        }, 100);
-        
-        setTimeout(function() {
-            window.location.href = window.location.href;
-        }, 200);
+<script>
+/**
+ * Storyline Exit -> Volver a INICIO (pantalla "Continuar / Reiniciar")
+ * - Limpia estado local (para evitar reanudar)
+ * - Redirige al "launcher" del paquete
+ * - (Opcional) postMessage al padre para que recargue el iframe
+ */
+(function () {
+  const estaEnIframe = window.self !== window.top;
+
+  // === AJUSTA ESTO SI TU "INICIO" ES OTRO ARCHIVO ===
+  // Storyline suele arrancar en: story.html
+  // A veces: index.html
+  const START_PAGE_CANDIDATES = ["story.html", "index.html"];
+
+  // Si tu paquete está en una ruta concreta (recomendado), fija la URL directa:
+  // const START_URL_EXACTA = "https://tu-dominio/ruta/story.html";
+  const START_URL_EXACTA = null;
+
+  // Claves típicas que Storyline/Articulate usa para persistencia (varía por versión)
+  const STORAGE_KEY_PATTERNS = [
+    "articulate",
+    "storyline",
+    "rise",
+    "lms",
+    "scorm",
+    "suspend",
+    "resume",
+    "tinCan",
+    "tincan"
+  ];
+
+  function log(...args) { try { console.log("[SL-EXIT]", ...args); } catch(e){} }
+
+  function limpiarPersistencia() {
+    try { sessionStorage.clear(); } catch(e){}
+
+    // LocalStorage: mejor “quirúrgico” que borrar TODO.
+    try {
+      const keys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k) continue;
+        const lk = k.toLowerCase();
+        if (STORAGE_KEY_PATTERNS.some(p => lk.includes(p))) keys.push(k);
+      }
+      keys.forEach(k => localStorage.removeItem(k));
+      log("Persistencia limpiada:", keys);
+    } catch (e) {
+      // Si falla por políticas del navegador, al menos intentamos recargar.
+      log("No se pudo limpiar localStorage:", e);
+    }
+  }
+
+  function resolverStartUrl() {
+    if (START_URL_EXACTA) return START_URL_EXACTA;
+
+    // Tomamos la URL actual sin hash
+    const u = new URL(window.location.href);
+    u.hash = "";
+
+    // Intento 1: si ya estamos en story.html o index.html, recargamos esa misma
+    const pathLower = u.pathname.toLowerCase();
+    const found = START_PAGE_CANDIDATES.find(p => pathLower.endsWith("/" + p) || pathLower.endsWith(p));
+    if (found) {
+      // Forzamos “cache busting” para que realmente reinicie
+      u.searchParams.set("restart", Date.now().toString());
+      return u.toString();
     }
 
-    // Bloqueo de window.close
-    window.close = reiniciarCurso;
-    if (window.parent && window.parent !== window) {
-        try { window.parent.close = reiniciarCurso; } catch(e) {}
+    // Intento 2: si estamos en otra página, intentamos reemplazar el último segmento por story.html
+    const segments = u.pathname.split("/");
+    segments[segments.length - 1] = "story.html";
+    u.pathname = segments.join("/");
+    u.searchParams.set("restart", Date.now().toString());
+    return u.toString();
+  }
+
+  function volverAlInicio() {
+    log("Solicitando volver al inicio (iframe:", estaEnIframe, ")");
+    limpiarPersistencia();
+
+    // Aviso al padre por si quieres que Open edX recargue el iframe
+    if (estaEnIframe) {
+      try {
+        window.parent.postMessage(
+          { action: "goToStart", source: "storyline", ts: Date.now() },
+          "*"
+        );
+        log("postMessage enviado al padre");
+      } catch (e) {
+        log("No se pudo comunicar con el padre:", e);
+      }
     }
 
-    // Interceptor de window.open
-    var originalOpen = window.open;
-    window.open = function(url, target, features) {
-        if (url && url.toLowerCase().indexOf('.pdf') !== -1) {
-            return originalOpen.apply(this, arguments);
-        }
-        console.log("window.open bloqueado");
-        reiniciarCurso();
-        return { close: function(){} };
-    };
+    const startUrl = resolverStartUrl();
+    log("Redirigiendo a:", startUrl);
 
-    // Interceptor de eventos (mousedown, click, touchstart)
-    function interceptarEvento(e) {
-        var el = e.target;
-        var intentos = 0;
-        
-        while (el && el !== document && intentos < 15) {
-            var texto = (el.innerText || el.textContent || '').toLowerCase();
-            var href = (el.href || '').toLowerCase();
-            
-            if (texto.includes('salir') || texto.includes('exit') || 
-                texto.includes('cerrar') || texto.includes('close') ||
-                href.includes('javascript:void') || href.includes('close')) {
-                
-                console.log("Botón de salida detectado");
-                e.preventDefault();
-                e.stopPropagation();
-                e.stopImmediatePropagation();
-                reiniciarCurso();
-                return false;
-            }
-            el = el.parentNode;
-            intentos++;
-        }
+    // Reemplazar (mejor que href=) para evitar volver con "atrás"
+    setTimeout(() => window.location.replace(startUrl), 50);
+  }
+
+  // 1) Bloquear window.close / funciones de salida típicas
+  window.close = volverAlInicio;
+  window.ExitCourse = volverAlInicio;
+  window.LMSFinish = volverAlInicio;
+  window.CloseCourse = volverAlInicio;
+
+  // 2) Interceptor de window.open (excepto PDFs)
+  const originalOpen = window.open;
+  window.open = function (url, target, features) {
+    if (url && String(url).toLowerCase().includes(".pdf")) {
+      return originalOpen.apply(this, arguments);
     }
+    volverAlInicio();
+    return { close: function(){} };
+  };
 
-    document.addEventListener('mousedown', interceptarEvento, true);
-    document.addEventListener('click', interceptarEvento, true);
-    document.addEventListener('touchstart', interceptarEvento, true);
+  // 3) Captura robusta del click/touch en botones "Salir"
+  function esBotonSalida(el) {
+    if (!el) return false;
 
-    // Sobrescribir funciones de Storyline
-    window.ExitCourse = reiniciarCurso;
-    window.LMSFinish = reiniciarCurso;
-    window.CloseCourse = reiniciarCurso;
-    
-    // Interceptor adicional después de que cargue Storyline
-    setTimeout(function() {
-        if (window.GetPlayer) {
-            var player = window.GetPlayer();
-            if (player && player.ExitCourse) {
-                player.ExitCourse = reiniciarCurso;
-            }
-        }
-    }, 2000);
-    
-    console.log("Sistema de reinicio activado");
+    const texto = ((el.innerText || el.textContent || "") + "").trim().toLowerCase();
+    const aria  = ((el.getAttribute && el.getAttribute("aria-label")) || "").trim().toLowerCase();
+    const title = ((el.getAttribute && el.getAttribute("title")) || "").trim().toLowerCase();
+    const href  = ((el.href || "") + "").trim().toLowerCase();
+
+    // Palabras clave (incluye variantes)
+    const claves = ["salir", "exit", "cerrar", "close", "finalizar", "terminar"];
+    const hitTexto = claves.some(k => texto.includes(k) || aria.includes(k) || title.includes(k));
+    const hitHref  = href.includes("javascript:void") || href.includes("close") || href.includes("exit");
+
+    return hitTexto || hitHref;
+  }
+
+  function interceptarEvento(e) {
+    let el = e.target;
+    let intentos = 0;
+
+    while (el && el !== document && intentos < 20) {
+      if (esBotonSalida(el)) {
+        log("Botón de salida detectado");
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        volverAlInicio();
+        return false;
+      }
+      el = el.parentNode;
+      intentos++;
+    }
+  }
+
+  document.addEventListener("click", interceptarEvento, true);
+  document.addEventListener("touchstart", interceptarEvento, true);
+  document.addEventListener("mousedown", interceptarEvento, true);
+
+  // 4) Intento adicional: si existe GetPlayer, también cubrimos posibles hooks
+  setTimeout(function () {
+    try {
+      if (window.GetPlayer) {
+        const player = window.GetPlayer();
+        if (player && player.ExitCourse) player.ExitCourse = volverAlInicio;
+      }
+    } catch (e) {}
+  }, 1500);
+
+  log("Control de salida activado (modo: volver a inicio).");
 })();
 </script>
+
