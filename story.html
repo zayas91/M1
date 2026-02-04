@@ -477,3 +477,56 @@
 </body>
 <script src="html5/lib/scripts/bootstrapper.min.js"></script>
 </html>
+// Código
+<script>
+(function() {
+    // 1. Forzar la redirección
+    function reiniciarCurso() {
+        console.log("Reiniciando curso...");
+        // Intentamos múltiples métodos de redirección para romper el cierre
+        window.location.replace("story.html");
+        setTimeout(function(){ window.location.href = "story.html"; }, 50);
+    }
+
+    // 2. Bloqueo de window.close (Cierre de ventana)
+    // Redefinimos la función tanto en la ventana actual como en la "parent" por si acaso
+    window.close = reiniciarCurso;
+    if(window.parent) window.parent.close = reiniciarCurso;
+
+    // 3. Interceptor de window.open (URLs externas)
+    var originalOpen = window.open;
+    window.open = function(url, target, features) {
+        if (url && url.toLowerCase().indexOf('.pdf') !== -1) {
+            return originalOpen.apply(this, arguments);
+        }
+        reiniciarCurso();
+        return { close: function(){} }; // Retornamos un objeto falso para evitar errores
+    };
+
+    // 4. EL "MARTILLO": Interceptor de eventos de ratón
+    // Escuchamos 'mousedown' en lugar de 'click' porque Storyline 
+    // a veces lanza el cierre antes de que el 'click' termine.
+    document.addEventListener('mousedown', function(e) {
+        var el = e.target;
+        // Subimos por el árbol de elementos para ver si el usuario tocó el botón salir
+        while (el && el !== document) {
+            var texto = (el.innerText || el.textContent || "").toLowerCase();
+            if (texto.includes("salir") || texto.includes("exit")) {
+                console.log("Botón detectado, anulando acción original...");
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                reiniciarCurso();
+                return false;
+            }
+            el = el.parentNode;
+        }
+    }, true);
+
+    // 5. Desactivar el trigger de salida de Storyline
+    // Intentamos "limpiar" las funciones que Storyline registra globalmente
+    window.ExitCourse = reiniciarCurso;
+    window.LMSFinish = reiniciarCurso;
+    
+})();
+</script>
